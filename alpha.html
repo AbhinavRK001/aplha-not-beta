@@ -1,0 +1,492 @@
+import React, { useState, useEffect, useRef } from 'react';
+
+export default function AlphaBetaPruningVisualizer() {
+  const [nodes, setNodes] = useState([]);
+  const [edges, setEdges] = useState([]);
+  const [selectedNode, setSelectedNode] = useState(null);
+  const [draggedNode, setDraggedNode] = useState(null);
+  const [offset, setOffset] = useState({ x: 0, y: 0 });
+  const [nextId, setNextId] = useState(0);
+  const [isRunning, setIsRunning] = useState(false);
+  const [prunedEdges, setPrunedEdges] = useState([]);
+  const [shortestPath, setShortestPath] = useState([]);
+  const [evalHistory, setEvalHistory] = useState([]);
+  const [nodeValues, setNodeValues] = useState({});
+  const [selectedNodeType, setSelectedNodeType] = useState('max');
+  const svgRef = useRef(null);
+
+  // Add a new node
+  const addNode = (type, x, y) => {
+    const id = nextId;
+    setNextId(id + 1);
+    
+    const newNode = {
+      id,
+      x,
+      y,
+      type,
+      value: null
+    };
+    
+    setNodes([...nodes, newNode]);
+    return id;
+  };
+
+  // Add an edge between two nodes
+  const addEdge = (from, to) => {
+    if (from === to) return;
+    
+    // Check if edge already exists
+    const edgeExists = edges.some(edge => edge.from === from && edge.to === to);
+    if (edgeExists) return;
+    
+    setEdges([...edges, { from, to }]);
+  };
+
+  // Connect selected node to another node
+  const handleNodeClick = (nodeId) => {
+    if (selectedNode === null) {
+      setSelectedNode(nodeId);
+    } else {
+      addEdge(selectedNode, nodeId);
+      setSelectedNode(null);
+    }
+  };
+
+  // Mouse down event for dragging
+  const handleMouseDown = (e, nodeId) => {
+    if (e.button !== 0) return; // Only left clicks
+    
+    const node = nodes.find(n => n.id === nodeId);
+    const svgRect = svgRef.current.getBoundingClientRect();
+    setDraggedNode(nodeId);
+    setOffset({
+      x: e.clientX - (node.x + svgRect.left),
+      y: e.clientY - (node.y + svgRect.top)
+    });
+    e.stopPropagation();
+  };
+
+  // Mouse move event for dragging
+  const handleMouseMove = (e) => {
+    if (draggedNode !== null) {
+      const svgRect = svgRef.current.getBoundingClientRect();
+      const x = e.clientX - svgRect.left - offset.x;
+      const y = e.clientY - svgRect.top - offset.y;
+      
+      setNodes(nodes.map(node => 
+        node.id === draggedNode ? { ...node, x, y } : node
+      ));
+    }
+  };
+
+  // Mouse up event for dragging
+  const handleMouseUp = () => {
+    setDraggedNode(null);
+  };
+
+  // Change node value
+  const updateNodeValue = (nodeId, value) => {
+    const numValue = Number(value);
+    if (!isNaN(numValue)) {
+      setNodeValues({
+        ...nodeValues,
+        [nodeId]: numValue
+      });
+    }
+  };
+
+  // Delete node and connected edges
+  const deleteNode = (nodeId) => {
+    setNodes(nodes.filter(node => node.id !== nodeId));
+    setEdges(edges.filter(edge => edge.from !== nodeId && edge.to !== nodeId));
+    
+    // Clean up related states
+    if (selectedNode === nodeId) setSelectedNode(null);
+    const updatedNodeValues = { ...nodeValues };
+    delete updatedNodeValues[nodeId];
+    setNodeValues(updatedNodeValues);
+  };
+
+  // Get child nodes
+  const getChildNodes = (nodeId) => {
+    return edges
+      .filter(edge => edge.from === nodeId)
+      .map(edge => edge.to);
+  };
+
+  // Alpha-Beta Pruning Algorithm
+  const alphaBetaPruning = () => {
+    setIsRunning(true);
+    setPrunedEdges([]);
+    setShortestPath([]);
+    setEvalHistory([]);
+    
+    // Find the root node (node with no parents)
+    const nodeWithParents = new Set(edges.map(edge => edge.to));
+    const rootCandidates = nodes.filter(node => !nodeWithParents.has(node.id));
+    
+    if (rootCandidates.length === 0) {
+      alert("Tree needs a root node! (A node with no parents)");
+      setIsRunning(false);
+      return;
+    }
+    
+    const root = rootCandidates[0];
+    
+    // Track pruned edges and evaluation history
+    const prunedEdgesSet = new Set();
+    const history = [];
+    
+    // Main alpha-beta function
+    const alphaBeta = (nodeId, depth, alpha, beta, isMaximizing, path = []) => {
+      history.push({
+        nodeId,
+        depth,
+        alpha,
+        beta,
+        isMaximizing
+      });
+      
+      const children = getChildNodes(nodeId);
+      
+      // Leaf node
+      if (children.length === 0) {
+        const value = nodeValues[nodeId] ?? 0;
+        return { value, path: [...path, nodeId] };
+      }
+      
+      let bestPath = [];
+      
+      if (isMaximizing) {
+        let maxEval = -Infinity;
+        
+        for (const child of children) {
+          const evalResult = alphaBeta(child, depth + 1, alpha, beta, false, [...path, nodeId]);
+          
+          if (evalResult.value > maxEval) {
+            maxEval = evalResult.value;
+            bestPath = evalResult.path;
+          }
+          
+          alpha = Math.max(alpha, evalResult.value);
+          
+          if (beta <= alpha) {
+            // Prune remaining children
+            const remainingChildren = children.slice(children.indexOf(child) + 1);
+            remainingChildren.forEach(remainingChild => {
+              prunedEdgesSet.add(`${nodeId}-${remainingChild}`);
+            });
+            break;
+          }
+        }
+        
+        return { value: maxEval, path: bestPath };
+      } else {
+        let minEval = Infinity;
+        
+        for (const child of children) {
+          const evalResult = alphaBeta(child, depth + 1, alpha, beta, true, [...path, nodeId]);
+          
+          if (evalResult.value < minEval) {
+            minEval = evalResult.value;
+            bestPath = evalResult.path;
+          }
+          
+          beta = Math.min(beta, evalResult.value);
+          
+          if (beta <= alpha) {
+            // Prune remaining children
+            const remainingChildren = children.slice(children.indexOf(child) + 1);
+            remainingChildren.forEach(remainingChild => {
+              prunedEdgesSet.add(`${nodeId}-${remainingChild}`);
+            });
+            break;
+          }
+        }
+        
+        return { value: minEval, path: bestPath };
+      }
+    };
+    
+    // Run algorithm
+    const result = alphaBeta(root.id, 0, -Infinity, Infinity, true);
+    
+    // Update visualization
+    setPrunedEdges(Array.from(prunedEdgesSet));
+    setShortestPath(result.path);
+    setEvalHistory(history);
+    setIsRunning(false);
+  };
+
+  // Check if edge is part of shortest path
+  const isInShortestPath = (from, to) => {
+    for (let i = 0; i < shortestPath.length - 1; i++) {
+      if (shortestPath[i] === from && shortestPath[i + 1] === to) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Determine if an edge is pruned
+  const isPruned = (from, to) => {
+    return prunedEdges.includes(`${from}-${to}`);
+  };
+
+  // Clear everything
+  const clearAll = () => {
+    setNodes([]);
+    setEdges([]);
+    setSelectedNode(null);
+    setDraggedNode(null);
+    setNextId(0);
+    setPrunedEdges([]);
+    setShortestPath([]);
+    setEvalHistory([]);
+    setNodeValues({});
+  };
+
+  // Add a new node when clicking on the SVG
+  const handleSvgClick = (e) => {
+    if (selectedNode !== null) {
+      setSelectedNode(null);
+      return;
+    }
+    
+    const svgRect = svgRef.current.getBoundingClientRect();
+    const x = e.clientX - svgRect.left;
+    const y = e.clientY - svgRect.top;
+    
+    addNode(selectedNodeType, x, y);
+  };
+
+  // Get node type (max or min)
+  const getNodeType = (nodeId) => {
+    const node = nodes.find(n => n.id === nodeId);
+    return node ? node.type : 'max';
+  };
+
+  // Determine the depth of a node
+  const getNodeDepth = (nodeId) => {
+    const nodeWithParents = new Set(edges.map(edge => edge.to));
+    
+    if (!nodeWithParents.has(nodeId)) {
+      return 0; // Root
+    }
+    
+    let maxDepth = 0;
+    let visited = new Set();
+    
+    const dfs = (currentId, depth) => {
+      if (visited.has(currentId)) return;
+      visited.add(currentId);
+      
+      const parentEdges = edges.filter(edge => edge.to === currentId);
+      
+      if (parentEdges.length === 0) {
+        maxDepth = Math.max(maxDepth, depth);
+        return;
+      }
+      
+      for (const edge of parentEdges) {
+        dfs(edge.from, depth + 1);
+      }
+    };
+    
+    dfs(nodeId, 0);
+    return maxDepth;
+  };
+
+  useEffect(() => {
+    window.addEventListener('mouseup', handleMouseUp);
+    window.addEventListener('mousemove', handleMouseMove);
+    
+    return () => {
+      window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('mousemove', handleMouseMove);
+    };
+  }, [draggedNode, offset]);
+
+  return (
+    <div className="flex flex-col h-screen text-gray-800">
+      <div className="bg-gray-100 p-4 shadow-md">
+        <h1 className="text-2xl font-bold mb-2">Alpha-Beta Pruning Visualizer</h1>
+        <div className="flex items-center gap-4 mb-2">
+          <div>
+            <span className="font-medium mr-2">Node Type:</span>
+            <select 
+              className="border rounded p-1"
+              value={selectedNodeType}
+              onChange={(e) => setSelectedNodeType(e.target.value)}
+            >
+              <option value="max">MAX</option>
+              <option value="min">MIN</option>
+              <option value="leaf">Leaf</option>
+            </select>
+          </div>
+          <button 
+            onClick={alphaBetaPruning}
+            disabled={isRunning || nodes.length === 0}
+            className="bg-blue-500 text-white px-4 py-1 rounded disabled:bg-blue-300"
+          >
+            Run Alpha-Beta Pruning
+          </button>
+          <button 
+            onClick={clearAll}
+            className="bg-red-500 text-white px-4 py-1 rounded"
+          >
+            Clear All
+          </button>
+        </div>
+        <div className="flex gap-4 text-sm">
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-4 rounded-full border-2 border-blue-500 bg-white"></div>
+            <span>MAX Node</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-4 rounded-full border-2 border-red-500 bg-white"></div>
+            <span>MIN Node</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-4 rounded-full border-2 border-green-500 bg-white"></div>
+            <span>Leaf Node</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-1 bg-red-500"></div>
+            <span>Pruned Edge</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-4 h-1 bg-green-500"></div>
+            <span>Optimal Path</span>
+          </div>
+        </div>
+      </div>
+      
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 overflow-auto bg-gray-50">
+          <svg 
+            ref={svgRef}
+            className="w-full h-full" 
+            onClick={handleSvgClick}
+          >
+            {/* Draw edges */}
+            {edges.map(edge => {
+              const fromNode = nodes.find(n => n.id === edge.from);
+              const toNode = nodes.find(n => n.id === edge.to);
+              
+              if (!fromNode || !toNode) return null;
+              
+              const isPrunedEdge = isPruned(edge.from, edge.to);
+              const isPathEdge = isInShortestPath(edge.from, edge.to);
+              
+              return (
+                <line 
+                  key={`${edge.from}-${edge.to}`}
+                  x1={fromNode.x}
+                  y1={fromNode.y}
+                  x2={toNode.x}
+                  y2={toNode.y}
+                  stroke={isPrunedEdge ? "#ef4444" : isPathEdge ? "#22c55e" : "#9ca3af"}
+                  strokeWidth={isPrunedEdge || isPathEdge ? 3 : 2}
+                  strokeDasharray={isPrunedEdge ? "5,5" : ""}
+                />
+              );
+            })}
+            
+            {/* Draw nodes */}
+            {nodes.map(node => {
+              const isInPath = shortestPath.includes(node.id);
+              const borderColor = 
+                node.type === 'max' ? "#3b82f6" : 
+                node.type === 'min' ? "#ef4444" : "#22c55e";
+              
+              return (
+                <g key={node.id}>
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={20}
+                    fill={isInPath ? "#fef3c7" : "white"}
+                    stroke={borderColor}
+                    strokeWidth={isInPath ? 4 : 2}
+                    onMouseDown={(e) => handleMouseDown(e, node.id)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleNodeClick(node.id);
+                    }}
+                    className="cursor-pointer"
+                  />
+                  <text
+                    x={node.x}
+                    y={node.y}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={12}
+                    fontWeight="bold"
+                  >
+                    {node.id}
+                  </text>
+                  <text
+                    x={node.x}
+                    y={node.y + 30}
+                    textAnchor="middle"
+                    dominantBaseline="middle"
+                    fontSize={10}
+                  >
+                    {nodeValues[node.id] !== undefined ? nodeValues[node.id] : '?'}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+        
+        <div className="w-64 p-4 border-l overflow-y-auto">
+          <h2 className="font-bold mb-2">Node Details</h2>
+          {nodes.map(node => (
+            <div key={node.id} className="mb-4 p-2 border rounded">
+              <div className="flex justify-between mb-1">
+                <span className="font-medium">Node {node.id}</span>
+                <span className="text-xs">{getNodeType(node.id).toUpperCase()}</span>
+              </div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm">Value:</label>
+                <input
+                  type="number"
+                  value={nodeValues[node.id] ?? ''}
+                  onChange={(e) => updateNodeValue(node.id, e.target.value)}
+                  className="border rounded w-20 px-1 py-0.5 text-sm"
+                />
+              </div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-sm">Type:</label>
+                <select
+                  value={node.type}
+                  onChange={(e) => {
+                    setNodes(nodes.map(n => 
+                      n.id === node.id ? { ...n, type: e.target.value } : n
+                    ));
+                  }}
+                  className="border rounded w-20 px-1 py-0.5 text-sm"
+                >
+                  <option value="max">MAX</option>
+                  <option value="min">MIN</option>
+                  <option value="leaf">Leaf</option>
+                </select>
+              </div>
+              <div className="flex justify-end mt-2">
+                <button
+                  onClick={() => deleteNode(node.id)}
+                  className="bg-red-500 text-white text-xs px-2 py-1 rounded"
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
